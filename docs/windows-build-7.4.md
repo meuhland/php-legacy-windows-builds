@@ -5,6 +5,10 @@ Windows 11 machine, on 22 October 2026, against this repository at `4d4bbb7`. It
 the toolchain that worked, the checks done before running anything, the three problems hit
 on the way and their fixes, and the results.
 
+Results: on the full test pack, the patched build shows exactly the 9 expected differences
+from the official build. It also lacks the `DOTNET` class, because VS2017 Build Tools doesn't
+put a .NET Framework SDK on the include path (section 7).
+
 Short version: the build works, but `build.ps1` as of `4d4bbb7` stops in `phpsdk_deps` for
 7.2-7.4 until two lines of the PHP SDK 2.2.0 it downloads are fixed (section 5). Commit
 `c88c8f4` (branch `fix-sdk-2.2.0-deps`) makes `build.ps1` apply those fixes itself, and was
@@ -309,8 +313,76 @@ the patched build passes all 5.
 both need client DLLs that aren't in the zip. Check them on the target server if it uses
 them.
 
-Not run: the full test pack (`compare.ps1` without `-TargetedOnly`), which takes hours. Its
-expected difference is the 9 tests listed in the README.
+### Full test pack
+
+`compare.ps1` without `-TargetedOnly` runs php.net's `php-test-pack-7.4.33.zip` (`ext`,
+`Sapi`, `tests`, `Zend`) against both builds. `-Jobs 8` was used on a machine with 16
+logical CPUs and 8 GB RAM; more jobs risk memory-hungry tests failing on one side only.
+
+```sh
+env -u NoDefaultCurrentDirectoryInExePath powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\path\to\php-legacy-windows-builds\compare.ps1' -Version 7.4 -Flavor NTS -Jobs 8
+```
+
+About 1.5 hours: 45 minutes for the official build, 48 for the patched one.
+
+```
+Test pack (ext, Sapi, tests, Zend):
+  official: Tests skipped : 2907 ( 18.1%) --------; Tests failed : 61 ( 0.4%) ( 0.5%); Tests passed : 13096 ( 81.3%) ( 99.2%)
+  patched: Tests skipped : 2907 ( 18.1%) --------; Tests failed : 72 ( 0.4%) ( 0.5%); Tests passed : 13085 ( 81.3%) ( 99.2%)
+  failing in both builds: 61 (not a difference)
+
+Failing only with the patches, expected (9 of 9):
+  ext/session/tests/rfc1867.phpt
+  ext/session/tests/rfc1867_inter.phpt
+  ext/session/tests/rfc1867_sid_cookie.phpt
+  ext/session/tests/rfc1867_sid_get.phpt
+  ext/session/tests/rfc1867_sid_get_2.phpt
+  ext/session/tests/rfc1867_sid_invalid.phpt
+  ext/session/tests/rfc1867_sid_only_cookie.phpt
+  ext/session/tests/rfc1867_sid_post.phpt
+  tests/lang/bug45392.phpt
+
+Failing only with the patches, NOT expected (2) - look at the .diff next to each test in C:\php-sdk\compare\7.4-NTS\tests-patched:
+  ext/com_dotnet/tests/bug73679.phpt
+  ext/com_dotnet/tests/bug77177.phpt
+
+Failing only on the official build (0):
+```
+
+All 9 expected changes, and nothing fails only on the official build. The 2 unexpected
+failures both fail with `Class 'DOTNET' not found`. That comes from the build environment,
+not the patch.
+
+### No `DOTNET` class with VS2017 Build Tools
+
+`ext/com_dotnet/config.w32` only defines `HAVE_MSCOREE_H`, which compiles in the `DOTNET`
+class, when configure finds the .NET Framework SDK header `mscoree.h`. In this run it didn't:
+
+```
+Checking for mscoree.h ...  <not found>
+```
+
+| | Official 7.4.33 | This build |
+|---|---|---|
+| `COM`, `VARIANT` | yes | yes |
+| `DOTNET` | yes | **no** |
+
+The machine had the .NET Framework 4.8 and 4.8.1 SDKs, from a newer Visual Studio. VS2017's
+`Common7\Tools\vsdevcmd\ext\netfxsdk.bat` only looks for the 4.6.1 and 4.6 SDKs in the
+registry, so `NETFXSDKDir` stays empty and no .NET SDK path reaches `INCLUDE`. Installing
+VS2017 Build Tools with `--includeRecommended` (section 2) doesn't add a .NET Framework SDK.
+
+This only matters to code that uses `new DOTNET(...)`; `COM` objects are unaffected. To get
+`DOTNET`, there are two options. **Neither was tested here.**
+
+- Install the .NET Framework 4.6.1 SDK component in VS2017 Build Tools.
+- Put a newer SDK's `Include\um` on `INCLUDE` before running `build.ps1`. com_dotnet only
+  checks for the header and links no .NET library, and VS2017's environment scripts prepend
+  to an existing `INCLUDE`.
+
+Either way, check that configure reports `Checking for mscoree.h ... <found>`, and that
+`php -n -d extension_dir=ext -d extension=php_com_dotnet.dll -r 'var_dump(class_exists("DOTNET"));'` prints
+`bool(true)`.
 
 ## 8. `build.ps1` fix
 
