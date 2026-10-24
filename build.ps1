@@ -132,6 +132,26 @@ if (-not (Test-Path (Join-Path $Root 'phpsdk-starter.bat'))) {
     Get-ChildItem -Force (Join-Path $Root '.sdk-tmp') | Move-Item -Destination $Root
     Remove-Item (Join-Path $Root '.sdk-tmp')
 }
+
+# SDK 2.2.0 predates the move of its dependency server to downloads.php.net, and phpsdk_deps
+# (7.2-7.4) fails with "Failed to fetch supported branches" until two later upstream fixes
+# are applied. Done in place on every run, so an SDK cloned by an older build.ps1 is fixed too.
+#  - VERSION ends in CRLF, which lands in the User-Agent header and corrupts the request
+#    (php-sdk-binary-tools GH-32): trim it.
+#  - The series listing now has relative links (href="packages-..."), which the pattern
+#    requiring "/packages-" doesn't match: drop the slash, as php-sdk-binary-tools master does.
+$sdkConfig = Join-Path $Root 'lib\php\libsdk\SDK\Config.php'
+$text = [IO.File]::ReadAllText($sdkConfig)
+$fixed = $text.Replace('return file_get_contents($path);', 'return trim(file_get_contents($path));')
+$fixed = $fixed.Replace('preg_match_all(",/packages-', 'preg_match_all(",packages-')
+if ($fixed -ne $text) {
+    Write-Host "Fixing $sdkConfig for downloads.php.net"
+    [IO.File]::WriteAllText($sdkConfig, $fixed)
+}
+if (-not $fixed.Contains('return trim(file_get_contents($path));') -or -not $fixed.Contains('preg_match_all(",packages-')) {
+    Write-Warning "$sdkConfig doesn't look like SDK 2.2.0's; phpsdk_deps may fail to fetch dependencies."
+}
+
 $sevenZip = Join-Path $Root 'bin\7za.exe'
 
 $legacySdk = Join-Path $Root 'legacy-2011'
@@ -214,7 +234,9 @@ foreach ($ver in $selected) {
         $configureArgs += '--enable-object-out-dir=../obj/'  # outside the source tree, reset on every run
     }
 
-    $lines = @('@echo off', 'setlocal')
+    # Some shells and tools set NoDefaultCurrentDirectoryInExePath; cmd then won't run
+    # buildconf.bat and configure.bat from the source directory by name.
+    $lines = @('@echo off', 'setlocal', 'set "NoDefaultCurrentDirectoryInExePath="')
     if ($rel.Crt -eq 'vc11') {
         $vcArch = if ($Arch -eq 'x64') { 'amd64' } else { 'x86' }
         $lines += @(
