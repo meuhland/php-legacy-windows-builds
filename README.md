@@ -1,7 +1,7 @@
 # Legacy PHP Windows builds: CVE-2026-109618 / CVE-2026-109619
 
 Patches and scripts to build **PHP 5.6, 7.0, 7.2, 7.3 and 7.4 for Windows** (and fixed
-`.deb` packages of php7.2 and php7.4 for Ubuntu 18.04) with the
+`.deb` packages of php7.2, php7.4 and php8.2 for Ubuntu 18.04, and php7.4 with APCu for 20.04) with the
 fixes for the two critical remote code execution bugs announced on
 [21 October 2026](https://www.php.net/archive/2026.php#2026-10-21-5):
 
@@ -137,7 +137,7 @@ With Apache `mod_php`, the copy Apache loads first wins: update `Apache24\bin` t
 if it ships `*-1_1-x64.dll`. `php -i` then shows the new *OpenSSL Library Version*.
 5.6 and 7.0 would need a 1.0.2 build (1.0.2u was the last public one).
 
-## Ubuntu 18.04 packages
+## Ubuntu 18.04 and 20.04 packages
 
 For 18.04 machines without Ubuntu Pro, `ubuntu-18.04/` rebuilds fixed `.deb` packages in
 Docker, as drop-in upgrades of what those machines run:
@@ -156,6 +156,27 @@ ubuntu-18.04/test.sh php7.4      # ours vs deb.sury.org's build of the same sour
 ubuntu-18.04/test.sh php8.2      # likewise
 ```
 
+**Ubuntu 20.04:** deb.sury.org no longer builds for 20.04 either, so the same scripts with
+`UBUNTU=20.04` rebuild, into `ubuntu-18.04/out-20.04/`, for 20.04 machines that run php7.4
+from deb.sury.org. That includes machines upgraded in place from 18.04 that still run its
+18.04 builds (`1:7.4.33-5+ubuntu18.04.1+deb.sury.org+1` and the like), whose packages
+still link against 18.04 libraries:
+
+| Package | Rebuilt from | New version |
+|---|---|---|
+| php7.4 | deb.sury.org's `1:7.4.33-31`, unchanged | `1:7.4.33-31+ubuntu20.04.1+cve2026.1` |
+| php7.4-apcu | deb.sury.org's `php-apcu` `5.1.22+4.0.11-2`, unchanged, built for 7.4 only against the php7.4 above | `5.1.22+4.0.11-2+ubuntu20.04.1+cve2026.1` |
+| php-common | deb.sury.org's `php-defaults` | `2:101~+ubuntu20.04.1+cve2026.1` |
+
+APCu itself has no change for the CVEs (the fix is in PHP); it is rebuilt so that a 20.04
+machine gets it built for 20.04, as deb.sury.org's 20.04 and 18.04 builds are gone.
+(Ubuntu's own 20.04 php7.4, `7.4.3-4ubuntu2.*`, is not covered.)
+
+```bash
+UBUNTU=20.04 ubuntu-18.04/build.sh             # php7.4, php-defaults, then php-apcu (~40 min)
+UBUNTU=20.04 ubuntu-18.04/test.sh php7.4       # ours on 20.04 vs deb.sury.org's on 22.04
+```
+
 Ubuntu's source comes from the signed 18.04 archive; deb.sury.org's from its Launchpad
 PPA, with the `.dsc` signature and checksums verified. The 7.2 patch is the same fix as
 `patches/7.2`, adapted to Ubuntu's 7.2.24 tree (see its header): Ubuntu had already
@@ -165,15 +186,20 @@ handlers.
 
 The versions sort above what is installed, and below a later official update (Ubuntu
 Pro's `+esm` builds, a deb.sury.org build of the same release), which then replaces them.
-To install, copy `out/php7.2` (or `out/php7.4`) to the machine and upgrade only the PHP
-packages already installed:
+To install, copy `out/php7.2` (or `out/php7.4`; on 20.04 `out-20.04/php7.4` plus
+`out-20.04/php-apcu/php7.4-apcu_*.deb`, in one directory) to the machine and upgrade only
+the PHP packages already installed:
 
 ```bash
-cd php7.2 && sudo apt install $(for p in $(dpkg-query -W -f '${Package}\n' 'php7.2*' 'libapache2-mod-php7.2' 'libphp7.2-embed' 2>/dev/null); do ls ./${p}_*.deb 2>/dev/null; done)
+cd php7.2 && sudo apt install --no-install-recommends $(for p in $(dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' 'php7.2*' 'libapache2-mod-php7.2' 'libphp7.2-embed' 2>/dev/null | awk '$1 == "ii" {print $2}'); do ls ./${p}_*.deb 2>/dev/null; done)
 ```
 
 For php7.4 and php8.2 the same with `7.4` or `8.2`; add `../php-defaults/php-common_*.deb`
 only if `apt` asks for a newer `php-common`. Then restart PHP-FPM or Apache.
+The `ii` filter matters: `dpkg-query -W` also lists packages dpkg only knows of (removed,
+or never installed), and without it the command would install them, `php7.2-fpm` for
+instance. `--no-install-recommends` keeps apt from adding recommended packages
+(`pkg-php-tools` for `php7.4-dev` on 20.04).
 
 A machine with only `php8.2-common` and `php8.2-xml` (pulled in by deb.sury.org's `php-xml`
 metapackage) has no PHP 8.2 that can run, so nothing exposed; upgrading them is harmless.
@@ -199,6 +225,22 @@ Results (22 October 2026):
   so 2 of the targeted tests, which describe the minimal 5.6-7.4 mitigation, fail on both
   by design: memory exhaustion is handled gracefully (shutdown functions still run), and
   session upload progress is fixed rather than disabled.
+
+Results (2 November 2026):
+
+- php7.4 for 20.04: passes the 5 targeted tests and fails exactly the same suite tests
+  as deb.sury.org's own build of `-31` on 22.04 (6,889 passed, the same 29 failures).
+- php7.4-apcu for 20.04: APCu 5.1.22's own test suite passes (58/58; 3 of its tests
+  start a separate `php -n` server that loads APCu from a source tree's `modules/`, so
+  they need that directory pointed at `/usr/lib/php/20190902`).
+- Upgrade of a 20.04 machine running deb.sury.org's 18.04 builds (php7.4 `-5` with
+  Apache, apcu, pear, `php-xml`/`php8.2-xml`; recreated with stand-in packages, since
+  those builds can no longer be downloaded): the 15 php7.4 packages upgrade, nothing is
+  removed, `php-common` 2:93 is enough and stays, `mod_php` serves 7.4.33 with APCu shared
+  across requests.
+- Upgrade of a stock 18.04 php7.2 machine (Apache, the `php` metapackages, pear,
+  phpMyAdmin 4.6.6) from the Ubuntu archive with the release packages: the 15 php7.2
+  packages upgrade, nothing is added or removed, phpMyAdmin's login page loads.
 
 ## Validation
 
@@ -244,7 +286,7 @@ build.ps1           Windows build for all versions
 compare.ps1         patched build vs official build, with the official test pack
 patches/<version>/  git format-patch series, applied in name order
 tests/              targeted .phpt tests for the fix
-ubuntu-18.04/       .deb rebuilds for Ubuntu 18.04 (build.sh, test.sh, the 7.2 patch)
+ubuntu-18.04/       .deb rebuilds for Ubuntu 18.04 and 20.04 (build.sh, test.sh, the 7.2 patch)
 validate/           Linux validation (Dockerfile, ci.sh, validate.sh, run-targeted.sh)
 php52/             PHP 5.2.17 + backports: VC6 build kit, patches, tests, validation
 ```

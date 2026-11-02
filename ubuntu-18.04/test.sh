@@ -3,9 +3,10 @@
 # tests/ and PHP's own test suites (Zend, tests, ext/session, ext/standard), then list
 # the tests that fail on one side only.
 #   php7.2: ours vs stock Ubuntu 7.2.24-0ubuntu0.18.04.17, both on 18.04
-#   php7.4, php8.2: ours on 18.04 vs deb.sury.org's build on Ubuntu 22.04 (same source)
+#   php7.4, php8.2: ours on 18.04 (or 20.04) vs deb.sury.org's build on Ubuntu 22.04 (same source)
 #
 # usage: ubuntu-18.04/test.sh php7.2|php7.4|php8.2   QUICK=1 for the targeted tests only
+#        UBUNTU=20.04 ubuntu-18.04/test.sh php7.4|php8.2   for the 20.04 packages (out-20.04/)
 # Expected: ours passes all targeted tests. php7.2 fails 9 suite tests more than stock
 # Ubuntu (8 ext/session/tests/rfc1867* and tests/lang/bug45392.phpt, see README);
 # php7.4 and php8.2 fail exactly the same tests as the reference. (8.2.35 has the complete
@@ -16,7 +17,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 proj=$(dirname "$here")
 hostpath() { (cd "$1" && { pwd -W 2>/dev/null || pwd; }); }
 pkg=${1:?usage: test.sh php7.2|php7.4|php8.2}
-res=$here/out/test-$pkg
+UBUNTU=${UBUNTU:-18.04}
+case $UBUNTU in
+  18.04) out=$here/out ;;
+  20.04) out=$here/out-20.04 ;;
+  *) echo "UBUNTU must be 18.04 or 20.04" >&2; exit 2 ;;
+esac
+rel=ubuntu-18.04/${out##*/}   # for messages
+res=$out/test-$pkg
 mkdir -p "$res" && rm -f "${res:?}"/*   # no stale results from an earlier run
 
 case $pkg in
@@ -27,13 +35,13 @@ case $pkg in
     ref_install="apt-get install -y -qq php7.2-cli php7.2-cgi" ;;
   php7.4|php8.2) ver=${pkg#php}
     if [ "$ver" = 7.4 ]; then upstream=7.4.33; extra=json; else upstream=8.2.35; extra=; fi
-    ours_image=ubuntu:18.04
+    ours_image=ubuntu:$UBUNTU
     ours_install="apt-get install -y -qq /debs/php-defaults/php-common_*.deb $(for p in common cli cgi opcache readline $extra; do printf '/debs/%s/%s-%s_*.deb ' "$pkg" "$pkg" "$p"; done)"
     ref_image=ubuntu:22.04
     ref_install="apt-get install -y -qq software-properties-common gpg-agent > /dev/null && add-apt-repository -y ppa:ondrej/php > /dev/null && apt-get update -qq && apt-get install -y -qq $pkg-cli $pkg-cgi" ;;
   *) echo "unknown package $pkg" >&2; exit 2 ;;
 esac
-[ -d "$here/out/$pkg" ] || { echo "No packages in ubuntu-18.04/out/$pkg: run build.sh $pkg first." >&2; exit 1; }
+[ -d "$out/$pkg" ] || { echo "No packages in $rel/$pkg: run build.sh $pkg first." >&2; exit 1; }
 
 # Runs inside the container: installs PHP, gets the php.net sources for the tests, runs them.
 read -r -d '' tester <<'SCRIPT' || true
@@ -73,10 +81,10 @@ for side in ours ref; do
   image=${side}_image install=${side}_install
   docker rm -f "test-$pkg-$side" > /dev/null 2>&1 || true
   MSYS_NO_PATHCONV=1 docker run -d --name "test-$pkg-$side" -e QUICK="${QUICK:-0}" \
-    -v "$(hostpath "$here/out"):/debs:ro" -v "$(hostpath "$proj/tests"):/tests:ro" -v "$(hostpath "$res"):/res" \
+    -v "$(hostpath "$out"):/debs:ro" -v "$(hostpath "$proj/tests"):/tests:ro" -v "$(hostpath "$res"):/res" \
     "${!image}" bash -c "$tester" tester "$side" "$ver" "$upstream" "${!install}" > /dev/null
 done
-echo "Testing $pkg: ours vs reference (results in ubuntu-18.04/out/test-$pkg)..."
+echo "Testing $pkg: ours vs reference (results in $rel/test-$pkg)..."
 docker wait "test-$pkg-ours" "test-$pkg-ref" > /dev/null
 docker rm "test-$pkg-ours" "test-$pkg-ref" > /dev/null
 
