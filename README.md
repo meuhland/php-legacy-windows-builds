@@ -68,7 +68,7 @@ Requirements per version (they can all live on one machine):
 | Version | Compiler | Install |
 |---|---|---|
 | 7.2, 7.3, 7.4 | VC15 | Visual Studio 2017 with *Desktop development with C++* |
-| 7.0 | VC14 | Visual Studio 2015, or VS2017's *VC++ 2015.3 v14.00 (v140) toolset for desktop* component |
+| 7.0 | VC14 | Visual Studio 2015, VS2017's *VC++ 2015.3 v14.00 (v140) toolset for desktop* or VS2022's *MSVC v140 - VS 2015 C++ build tools (v14.00)* component; with Windows SDK 10.0.26100 installed, also SDK 10.0.19041 (see `-WindowsSdk` below) |
 | 5.6 | VC11 | Visual Studio 2012, Update 5 (Express for Windows Desktop is enough) |
 
 Plus Git and internet access (github.com, windows.php.net, downloads.php.net).
@@ -76,6 +76,7 @@ Plus Git and internet access (github.com, windows.php.net, downloads.php.net).
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version all
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version 7.3,7.2 -Flavors TS
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version 7.0 -Arch x86 -Flavors TS -WindowsSdk 10.0.19041.0
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Version 7.0 -Vc14WithVs2017
 ```
 
@@ -88,10 +89,26 @@ flavor. Packages land in `C:\php-sdk\dist`:
 - `php-<version>-Win32-<vc>-x64.zip`: thread-safe, for Apache `mod_php`
 - `php-<version>-nts-Win32-<vc>-x64.zip`: non-thread-safe, for IIS/FastCGI and `php-cgi`
 
+`-Arch x86` builds 32-bit PHP (`...-x86.zip`), for a 32-bit Apache: a 64-bit
+`php7apache2_4.dll` in a 32-bit Apache fails with "not a valid Win32 application".
+
+`-WindowsSdk 10.0.19041.0` (7.0 only) builds against that Windows 10 SDK instead of the
+newest one installed. VS2015 can't compile SDK 10.0.26100's UCRT headers (error C2440 on
+`__m128i` in `wchar.h`); add SDK 10.0.19041 with the Visual Studio Installer. The output
+runs wherever the official build does (Windows Server 2012 R2 included): it imports no
+Windows functions the official 7.0 build doesn't.
+
 `-Vc14WithVs2017` builds 7.0 with the VS2017 compiler when the VC14 toolset is
 missing. The output links the same `vcruntime140`, but PHP 7.0 labels the compiler
-"untested" and its API ID differs from official VC14 builds, which only matters for
-loading separately built PECL DLLs.
+"untested" and its extension build ID is `API20151012,TS,19.16.27054` instead of
+`API20151012,TS,VC14`, so PECL DLLs built for official 7.0 (e.g. `php_imagick.dll`) refuse
+to load. Use the VC14 toolset when the server loads PECL extensions.
+
+**imagick on 7.0:** the PECL Windows build `php_imagick-3.4.3-7.0-ts-vc14-x86.zip` (or
+`-x64`) loads in the VC14 builds. It needs the full ImageMagick DLL set next to
+`httpd.exe` (Apache) or `php.exe`: the `CORE_RL_*` and `IM_MOD_RL_*` files from
+`https://downloads.php.net/~windows/pecl/deps/archives/ImageMagick-6.9.3-7-vc14-x86.zip`
+(`bin\`, 147 DLLs). Without the `IM_MOD_RL_*` coders, imagick loads but knows no formats.
 
 Then check `php -v` shows the `-cve2026` suffix and compare `php -m` with the server
 you are replacing.
@@ -121,6 +138,12 @@ the tests failing on one side only. Expect exactly the 9 tests the fix changes (
 a look at its `.diff`. `-TestDirs Zend,tests,ext\standard` runs a subset. A watchdog kills
 stuck PHP processes when no test finishes for 15 minutes (`-StallMinutes`): some server
 tests (e.g. `ext\openssl`) can otherwise block a run on Windows forever.
+
+7.0 TS x86 (6 November 2026, `-Arch x86 -Flavor TS`): exactly the 9 expected tests, nothing
+else. The official build also crashes (access violation) in 4 `ext/soap/tests/bugs` tests
+(`bug35142`, `bug36226`, `bug36226-2`, `bug66112`) that pass on the patched build; the
+patches don't touch SOAP, so this is a latent 7.0 SOAP memory bug that only this official
+binary trips over.
 
 ### OpenSSL and other bundled libraries
 
@@ -173,9 +196,27 @@ machine gets it built for 20.04, as deb.sury.org's 20.04 and 18.04 builds are go
 (Ubuntu's own 20.04 php7.4, `7.4.3-4ubuntu2.*`, is not covered.)
 
 ```bash
-UBUNTU=20.04 ubuntu-18.04/build.sh             # php7.4, php-defaults, then php-apcu (~40 min)
+UBUNTU=20.04 ubuntu-18.04/build.sh             # php7.4, php-defaults, php-apcu, then brotli (~45 min)
+UBUNTU=20.04 ubuntu-18.04/build.sh brotli      # brotli only (~5 min)
 UBUNTU=20.04 ubuntu-18.04/test.sh php7.4       # ours on 20.04 vs deb.sury.org's on 22.04
 ```
+
+**brotli on 20.04 ([CVE-2026-111497](https://www.cve.org/CVERecord?id=CVE-2026-111497),
+decoder buffer overflow):** Ubuntu fixed 20.04's brotli only in Ubuntu Pro (`+esm1`). On
+20.04 `libbrotli1` is used by `libcurl4` / `libcurl3-gnutls` (so PHP's curl extension,
+the `curl` command, git over HTTPS) and `apache2-bin` (`mod_brotli`). `build.sh brotli` rebuilds
+Ubuntu's own `1.0.7-6ubuntu0.1` with `ubuntu-18.04/brotli-CVE-2026-111497.patch`, Ubuntu
+22.04's fix for the CVE (upstream commit `0ed4268a`, applies with offsets only), as
+`1.0.7-6ubuntu0.1+cve2026.1`, running brotli's own test suite during the build. That
+sorts above the stock package and below Ubuntu Pro's `+esm1`. Only `libbrotli1` needs
+upgrading; then restart Apache and anything long-running that uses curl:
+
+```bash
+sudo apt install ./libbrotli1_1.0.7-6ubuntu0.1+cve2026.1_amd64.deb && sudo systemctl restart apache2
+```
+
+18.04's brotli (1.0.3) is affected too, but nothing in 18.04 links to it, and PHP's
+Windows builds (5.2-7.4) contain no brotli: their bundled curl is built without it.
 
 Ubuntu's source comes from the signed 18.04 archive; deb.sury.org's from its Launchpad
 PPA, with the `.dsc` signature and checksums verified. The 7.2 patch is the same fix as
@@ -242,6 +283,16 @@ Results (2 November 2026):
   phpMyAdmin 4.6.6) from the Ubuntu archive with the release packages: the 15 php7.2
   packages upgrade, nothing is added or removed, phpMyAdmin's login page loads.
 
+Results (6 November 2026), brotli for 20.04:
+
+- brotli's own tests pass during the build (C round trips 70/70, Python 376 tests).
+- Upgrade of a stock 20.04 machine with Apache `mod_brotli`, curl and the php7.4 packages
+  above: only `libbrotli1` upgrades, nothing else changes; a 3 MB file served with
+  `Content-Encoding: br` decodes identically through `curl` and PHP's curl extension.
+  The fix's new error code is active (`BrotliDecoderErrorString(-17)` is `BLOCK_SWITCH`).
+- libFuzzer with AddressSanitizer, 5 minutes each on the stock and the patched decoder:
+  no crashes on either (it didn't reproduce the CVE; it shows no new memory errors).
+
 ## Validation
 
 `validate/` builds each release tag with and without its patches on Linux
@@ -286,7 +337,7 @@ build.ps1           Windows build for all versions
 compare.ps1         patched build vs official build, with the official test pack
 patches/<version>/  git format-patch series, applied in name order
 tests/              targeted .phpt tests for the fix
-ubuntu-18.04/       .deb rebuilds for Ubuntu 18.04 and 20.04 (build.sh, test.sh, the 7.2 patch)
+ubuntu-18.04/       .deb rebuilds for Ubuntu 18.04 and 20.04 (build.sh, test.sh, the 7.2 and brotli patches)
 validate/           Linux validation (Dockerfile, ci.sh, validate.sh, run-targeted.sh)
 php52/             PHP 5.2.17 + backports: VC6 build kit, patches, tests, validation
 ```

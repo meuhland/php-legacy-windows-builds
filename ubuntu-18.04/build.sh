@@ -12,13 +12,16 @@
 #                 need (machines that already run them from deb.sury.org have it)
 #   php-apcu      deb.sury.org's APCu 5.1.22+4.0.11-2, rebuilt unchanged for php7.4 only, against
 #                 the php7.4 packages built here (build php7.4 and php-defaults first)
+#   brotli        Ubuntu's own 1.0.7-6ubuntu0.1 + brotli-CVE-2026-111497.patch (Ubuntu 22.04's fix)
+#                 -> 1.0.7-6ubuntu0.1+cve2026.1, installs over the stock packages (libbrotli1
+#                 is used by 20.04's libcurl4 and Apache); runs the package's own tests
 #
-# php7.2 is for 18.04 only (20.04 never had it).
+# php7.2 is for 18.04 only (20.04 never had it); brotli for 20.04 only.
 #
 # usage: ubuntu-18.04/build.sh [php7.2] [php7.4] [php8.2] [php-defaults] [php-apcu]
 #                                                     (default: all but php-apcu)
-#        UBUNTU=20.04 ubuntu-18.04/build.sh [php7.4] [php8.2] [php-defaults] [php-apcu]
-#                                                     (default: php7.4 php-defaults php-apcu)
+#        UBUNTU=20.04 ubuntu-18.04/build.sh [php7.4] [php8.2] [php-defaults] [php-apcu] [brotli]
+#                                                     (default: php7.4 php-defaults php-apcu brotli)
 # Output: ubuntu-18.04/out/<source package>/*.deb (out-20.04/ for 20.04), plus build logs.
 # Works from Linux or Git Bash on Windows (Docker Desktop). Needs docker.
 set -euo pipefail
@@ -27,7 +30,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 UBUNTU=${UBUNTU:-18.04}
 case $UBUNTU in
   18.04) CODENAME=bionic; out=$here/out; default="php7.2 php7.4 php8.2 php-defaults" ;;
-  20.04) CODENAME=focal; out=$here/out-20.04; default="php7.4 php-defaults php-apcu" ;;
+  20.04) CODENAME=focal; out=$here/out-20.04; default="php7.4 php-defaults php-apcu brotli" ;;
   *) echo "UBUNTU must be 18.04 or 20.04" >&2; exit 2 ;;
 esac
 mkdir -p "$out"
@@ -44,6 +47,7 @@ DEFAULTS_DSC=${DEFAULTS_DSC:-php-defaults/php-defaults_101~+ubuntu22.04.1+deb.su
 APCU_DSC=${APCU_DSC:-php-apcu/php-apcu_5.1.22+4.0.11-2+ubuntu22.04.1+deb.sury.org+1.dsc}
 DHPHP_DSC=${DHPHP_DSC:-../d/dh-php/dh-php_5.21+ubuntu22.04.1+deb.sury.org+1.dsc}   # build tool for php-apcu
 UBUNTU_PHP72=7.2.24-0ubuntu0.18.04.17
+UBUNTU_BROTLI=1.0.7-6ubuntu0.1
 
 packages=${*:-$default}
 
@@ -80,6 +84,7 @@ entry() {   # $1 = package, $2 = version, $3 = text: prepends a debian/changelog
   mv /tmp/changelog debian/changelog
 }
 
+check=nocheck   # PHP's test suites run separately (test.sh)
 case $pkg in
   php7.2)
     [ "$UBUNTU" = 18.04 ] || { echo "php7.2 is for Ubuntu 18.04 only" >&2; exit 2; }
@@ -118,11 +123,23 @@ case $pkg in
     v=$(dpkg-parsechangelog -S Version | sed 's/+ubuntu[0-9.]*+deb\.sury\.org+[0-9]*$//')
     entry php-apcu "$v+ubuntu$UBUNTU.1$SUFFIX" "  * No-change rebuild for Ubuntu $UBUNTU of $v from deb.sury.org, for PHP 7.4 only."
     ;;
+  brotli)
+    [ "$UBUNTU" = 20.04 ] || { echo "brotli is for Ubuntu 20.04 only" >&2; exit 2; }
+    apt-get source -qq "brotli=$UBUNTU_BROTLI" > /dev/null   # from the signed Ubuntu archive
+    mv brotli-1.0.7 src && cd src
+    cp /in/brotli-CVE-2026-111497.patch debian/patches/CVE-2026-111497.patch
+    echo CVE-2026-111497.patch >> debian/patches/series
+    entry brotli "$UBUNTU_BROTLI$SUFFIX" "  * SECURITY UPDATE: DoS or code exec via buffer overflow
+    - debian/patches/CVE-2026-111497.patch: Detect and report invalid stream
+      earlier, from Ubuntu 22.04's 1.0.9-2ubuntu0.1.
+    - CVE-2026-111497"
+    check=
+    ;;
   *) echo "unknown package $pkg" >&2; exit 2 ;;
 esac
 
 mk-build-deps -i -r -t 'apt-get -y -qq --no-install-recommends' debian/control > /dev/null
-DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)" dpkg-buildpackage -b -uc -us
+DEB_BUILD_OPTIONS="${check:+$check }parallel=$(nproc)" dpkg-buildpackage -b -uc -us
 mkdir -p "/out/$pkg" && cp ../*.deb "/out/$pkg/"
 SCRIPT
 
@@ -132,7 +149,7 @@ for pkg in $packages; do
   MSYS_NO_PATHCONV=1 docker run --rm \
     -e SUFFIX="$SUFFIX" -e SURY_POOL="$SURY_POOL" -e SURY_KEY="$SURY_KEY" -e UBUNTU="$UBUNTU" -e CODENAME="$CODENAME" \
     -e PHP74_DSC="$PHP74_DSC" -e PHP82_DSC="$PHP82_DSC" -e DEFAULTS_DSC="$DEFAULTS_DSC" -e UBUNTU_PHP72="$UBUNTU_PHP72" \
-    -e APCU_DSC="$APCU_DSC" -e DHPHP_DSC="$DHPHP_DSC" \
+    -e APCU_DSC="$APCU_DSC" -e DHPHP_DSC="$DHPHP_DSC" -e UBUNTU_BROTLI="$UBUNTU_BROTLI" \
     -v "$(hostpath "$here"):/in:ro" -v "$(hostpath "$out"):/out" \
     "ubuntu:$UBUNTU" bash -c "$builder" builder "$pkg" > "$out/$pkg.log" 2>&1 \
     && echo "  $(ls "$out/$pkg" | wc -l) packages in $rel/$pkg" \

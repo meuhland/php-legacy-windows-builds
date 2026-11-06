@@ -19,7 +19,10 @@
     Version  Compiler  Visual Studio
     -------  --------  ------------------------------------------------------------
     7.2-7.4  VC15      VS2017 with "Desktop development with C++"
-    7.0      VC14      VS2015, or VS2017 + "VC++ 2015.3 v14.00 (v140) toolset for desktop"
+    7.0      VC14      VS2015, or VS2017 + "VC++ 2015.3 v14.00 (v140) toolset for desktop",
+                       or VS2022 + "MSVC v140 - VS 2015 C++ build tools (v14.00)";
+                       with SDK 10.0.26100 installed, add SDK 10.0.19041 and pass
+                       -WindowsSdk 10.0.19041.0
                        (or pass -Vc14WithVs2017 to use the VS2017 compiler instead)
     5.6      VC11      VS2012 (Update 5)
 
@@ -30,6 +33,8 @@
     .\build.ps1 -Version 7.3,7.2
 .EXAMPLE
     .\build.ps1 -Version all -Flavors TS
+.EXAMPLE
+    .\build.ps1 -Version 7.0 -Arch x86 -Flavors TS -WindowsSdk 10.0.19041.0
 .EXAMPLE
     .\build.ps1 -Version 7.0 -Vc14WithVs2017
 #>
@@ -60,6 +65,11 @@ param(
     # Build 7.0 with the VS2017 (VC15) compiler when the VC14 toolset is missing.
     # The output is binary compatible (same vcruntime140); PHP 7.0 reports the compiler as untested.
     [switch] $Vc14WithVs2017,
+
+    # VC14 (7.0) only: the Windows 10 SDK to build against, e.g. 10.0.19041.0. Needed when a
+    # newer SDK is installed too: 10.0.26100's UCRT headers don't compile with VS2015.
+    [ValidatePattern('^(10\.0\.\d+\.0)?$')]
+    [string] $WindowsSdk = '',
 
     # Stop after preparing the patched sources, archived deps and build-task.cmd (no Visual Studio needed).
     [switch] $PrepareOnly
@@ -227,16 +237,29 @@ foreach ($ver in $selected) {
             "call `"$legacySdk\bin\phpsdk_setvars.bat`""
         )
     }
+    if ($rel.Crt -eq 'vc14' -and -not $Vc14WithVs2017) {
+        $vcArch = if ($Arch -eq 'x64') { 'amd64' } else { 'x86' }
+        if ($WindowsSdk) {
+            # The SDK shell already ran vcvarsall with the newest SDK; run it again with the one asked for.
+            $lines += @(
+                "call `"%VCINSTALLDIR%vcvarsall.bat`" $vcArch $WindowsSdk || exit /b 1"
+                'call phpsdk_setvars.bat || exit /b 1'
+            )
+        }
+        # VS2015's vcvarsall leaves out the SDK's versioned bin folder, where mc.exe and rc.exe are.
+        $lines += "set `"PATH=%WindowsSdkDir%bin\%WindowsSDKVersion%$Arch;%PATH%`""
+    }
     $lines += "cd /d `"$src`""
     if ($rel.DepsBranch) {
         $lines += "call phpsdk_deps --update --branch $($rel.DepsBranch) --deps `"$deps`" || exit /b 1"
     }
-    $lines += 'call buildconf.bat || exit /b 1'
+    # .\ : with NoDefaultCurrentDirectoryInExePath set, cmd doesn't run scripts from the current folder.
+    $lines += 'call .\buildconf.bat || exit /b 1'
     foreach ($flavor in $Flavors) {
         $flavorArgs = if ($flavor -eq 'NTS') { @('--disable-zts') } else { @() }
         $lines += @(
             "echo ===== Configuring PHP $ver $flavor ====="
-            "call configure.bat $(($configureArgs + $flavorArgs) -join ' ') || exit /b 1"
+            "call .\configure.bat $(($configureArgs + $flavorArgs) -join ' ') || exit /b 1"
             "echo ===== Building PHP $ver $flavor ====="
             'nmake || exit /b 1'
             'nmake snap || exit /b 1'
