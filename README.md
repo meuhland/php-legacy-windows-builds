@@ -110,12 +110,22 @@ to load. Use the VC14 toolset when the server loads PECL extensions.
 `https://downloads.php.net/~windows/pecl/deps/archives/ImageMagick-6.9.3-7-vc14-x86.zip`
 (`bin\`, 147 DLLs). Without the `IM_MOD_RL_*` coders, imagick loads but knows no formats.
 
+**VS2017 Build Tools and `DOTNET` (7.2-7.4):** VS2017 Build Tools works for the VC15
+builds, but check its install has a .NET Framework 4.6.1 or 4.6 SDK. VS2017's
+`netfxsdk.bat` looks only for those, and without one configure prints
+`Checking for mscoree.h ... <not found>` and `php_com_dotnet.dll` is built without the
+`DOTNET` class (`COM` and `VARIANT` still work). The official builds have it, so code using
+`new DOTNET(...)` would break; `compare.ps1` then reports
+`ext/com_dotnet/tests/bug73679.phpt` and `bug77177.phpt` as unexpected failures. A newer
+.NET Framework SDK (4.8, from a newer Visual Studio) is not picked up.
+
 Then check `php -v` shows the `-cve2026` suffix and compare `php -m` with the server
 you are replacing.
 
-> `build.ps1` has not yet been run end to end on Windows: the patches were validated
-> on Linux (below). Expect the first run of each toolchain, 5.6 and 7.0 especially,
-> to need small fixes.
+> 7.4 NTS x64 has been built and compared end to end on Windows with VS2017 Build Tools
+> (official 2/5, patched 5/5 targeted; full test pack: the 9 expected differences, plus the
+> two `DOTNET` tests above). The other versions and flavors were validated on Linux (below);
+> expect the first run of each toolchain, 5.6 and 7.0 especially, to need small fixes.
 
 ### Comparing a build with the official one
 
