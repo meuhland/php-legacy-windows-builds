@@ -126,6 +126,8 @@ you are replacing.
 > (official 2/5, patched 5/5 targeted; full test pack: the 9 expected differences, plus the
 > two `DOTNET` tests above). The other versions and flavors were validated on Linux (below);
 > expect the first run of each toolchain, 5.6 and 7.0 especially, to need small fixes.
+> [docs/windows-build-7.4.md](docs/windows-build-7.4.md) has the details of that run,
+> including how to check that the PHP SDK will find a VS2017 Build Tools install.
 
 ### Comparing a build with the official one
 
